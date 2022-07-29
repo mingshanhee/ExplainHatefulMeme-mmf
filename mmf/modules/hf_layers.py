@@ -320,7 +320,6 @@ class BertEncoderJit(BertEncoder):
         attention_mask: Optional[Tensor],
         encoder_hidden_states: Optional[Tensor] = None,
         encoder_attention_mask: Optional[Tensor] = None,
-        output_attentions: bool = False,
         output_hidden_states: bool = False,
         return_dict: bool = False,
         head_mask: Optional[Tensor] = None,
@@ -340,7 +339,7 @@ class BertEncoderJit(BertEncoder):
             )
             hidden_states = layer_outputs[0]
 
-            if not torch.jit.is_scripting() and output_attentions:
+            if not torch.jit.is_scripting() and self.output_attentions:
                 all_attentions = all_attentions + (layer_outputs[1],)
 
         # Add last layer
@@ -351,7 +350,7 @@ class BertEncoderJit(BertEncoder):
         if not torch.jit.is_scripting():
             if output_hidden_states:
                 outputs = outputs + (all_hidden_states,)
-            if output_attentions:
+            if self.output_attentions:
                 outputs = outputs + (all_attentions,)
         return outputs  # last-layer hidden state, (all hidden states), (all attentions)
 
