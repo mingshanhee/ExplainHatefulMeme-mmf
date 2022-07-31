@@ -418,122 +418,43 @@ class VisualBERT(BaseModel):
             for p in self.model.bert.parameters():
                 p.requires_grad = False
 
-    def flatten(
-        self,
-        sample_list: Dict[str, Tensor],
-        to_be_flattened: List[str],
-        to_be_flattened_dim: List[str],
-    ) -> Dict[str, Tensor]:
-        for key in to_be_flattened:
-            # Make sure these keys are present or otherwise set these keys to None
-            sample_list[key] = transform_to_batch_sequence(sample_list[key])
-        for key in to_be_flattened_dim:
-            sample_list[key] = transform_to_batch_sequence_dim(sample_list[key])
-        return sample_list
-
     def add_post_flatten_params(
-        self, sample_list: Dict[str, Tensor]
+        self, image_mask, input_mask
     ) -> Dict[str, Tensor]:
-        sample_list["visual_embeddings_type"] = torch.zeros_like(
-            sample_list["image_mask"]
-        )
+        visual_embeddings_type = torch.zeros_like(image_mask)
         attention_mask = torch.cat(
-            (sample_list["input_mask"], sample_list["image_mask"]), dim=-1
+            (input_mask, image_mask), dim=-1
         )
-        sample_list["attention_mask"] = attention_mask
 
-        if self.training_head_type == "pretraining":
-            assert sample_list["masked_lm_labels"].size(-1) == sample_list[
-                "input_mask"
-            ].size(-1)
-            new_lm_labels = torch.ones_like(attention_mask) * -1
-            size_masked_lm_labels = sample_list["masked_lm_labels"].size()
-            assert len(size_masked_lm_labels) == 2
-            new_lm_labels[
-                : size_masked_lm_labels[0], : size_masked_lm_labels[1]
-            ] = sample_list["masked_lm_labels"]
-            sample_list["masked_lm_labels"] = new_lm_labels
-
-        return sample_list
+        return visual_embeddings_type, attention_mask
 
     def get_optimizer_parameters(self, config):
         return get_optimizer_parameters_for_bert(self.model, config)
 
-    def flatten_for_bert(self, sample_list: Dict[str, Tensor]) -> Dict[str, Tensor]:
-        to_be_flattened = ["input_ids", "token_type_ids", "input_mask", "image_mask"]
-        to_be_flattened_dim = ["visual_embeddings"]
+    def flatten_for_bert(self, input_ids, token_type_ids, input_mask, image_mask, visual_embeddings, masked_lm_labels) -> Dict[str, Tensor]:
+        input_ids = transform_to_batch_sequence(input_ids)
+        token_type_ids = transform_to_batch_sequence(token_type_ids)
+        input_mask = transform_to_batch_sequence(input_mask)
+        image_mask = transform_to_batch_sequence(image_mask)
 
-        if self.training_head_type == "pretraining":
-            to_be_flattened.append("masked_lm_labels")
+        visual_embeddings = transform_to_batch_sequence_dim(visual_embeddings)
 
-        # We want to convert everything into: batch x sequence_length x (dim).
-        flattened = self.flatten(sample_list, to_be_flattened, to_be_flattened_dim)
-        return flattened
+        return input_ids, token_type_ids, input_mask, image_mask, visual_embeddings, masked_lm_labels
 
     def update_sample_list_based_on_head(
-        self, sample_list: Dict[str, Tensor]
+        self, image_feat_variable
     ) -> Dict[str, Tensor]:
-        bert_input_ids = sample_list["input_ids"]
-        bert_input_mask = sample_list["input_mask"]
-        bert_input_type_ids = sample_list["segment_ids"]
-
-        if self.training_head_type == "nlvr2":
-            if not torch.jit.is_scripting():
-                bert_input_ids = torch.cat([bert_input_ids, bert_input_ids])
-                bert_input_mask = torch.cat([bert_input_mask, bert_input_mask])
-                bert_input_type_ids = torch.cat(
-                    [bert_input_type_ids, bert_input_type_ids]
-                )
-
-                # image input
-                img0 = getattr(sample_list, "img0", {})
-                image_feat_variable_0 = getattr(img0, "image_feature_0", None)
-                img1 = getattr(sample_list, "img1", {})
-                image_feat_variable_1 = getattr(img1, "image_feature_0", None)
-                image_feat_variable = torch.cat(
-                    [image_feat_variable_0, image_feat_variable_1]
-                )
-
-                image_info = getattr(img0, "image_info_0", {})
-                image_dim_variable_0 = getattr(image_info, "max_features", None)
-                image_info = getattr(img1, "image_info_0", {})
-                image_dim_variable_1 = getattr(image_info, "max_features", None)
-                image_dim_variable = torch.cat(
-                    [image_dim_variable_0, image_dim_variable_1]
-                )
-            else:
-                raise RuntimeError("nlvr2 head doesn't support scripting as of now")
-        else:
-
-            if not torch.jit.is_scripting():
-                image_info = getattr(sample_list, "image_info_0", {})
-                image_dim_variable = getattr(image_info, "max_features", None)
-                image_feat_variable = getattr(sample_list, "image_feature_0", None)
-            else:
-                image_feat_variable = sample_list["image_feature_0"]
-                image_dim_variable = None
-
-        if image_dim_variable is None:
-            image_dim_variable = sample_list["image_feature_0"].new_full(
+        
+        image_dim_variable = image_feat_variable.new_full(
                 size=(image_feat_variable.size(0), 1),
                 fill_value=image_feat_variable.size(1),
             )
 
-        sample_list["visual_embeddings"] = image_feat_variable
-        sample_list["image_dim"] = image_dim_variable
-        sample_list["input_ids"] = bert_input_ids
-        sample_list["input_mask"] = bert_input_mask
-        sample_list["token_type_ids"] = bert_input_type_ids
-        return sample_list
+        return image_dim_variable
 
-    def add_custom_params(self, sample_list: Dict[str, Tensor]) -> Dict[str, Tensor]:
-        visual_embeddings = sample_list["visual_embeddings"]
-        image_dim = sample_list["image_dim"]
+    def add_custom_params(self, visual_embeddings, image_dim) -> Dict[str, Tensor]:
+        masked_lm_labels = None
 
-        if self.training_head_type == "pretraining":
-            # pretraining labels
-            sample_list["masked_lm_labels"] = sample_list["lm_label_ids"]
-        # image_feat_variable = batch x ( num_choice x ) image_feature_length x dim
         # Prepare Mask
         image_mask = torch.arange(
             visual_embeddings.size(-2), device=visual_embeddings.device
@@ -542,9 +463,8 @@ class VisualBERT(BaseModel):
             image_dim = image_dim.unsqueeze(-1)
             assert len(image_dim.size()) == len(image_mask.size())
         image_mask = image_mask < image_dim
-        sample_list["image_mask"] = image_mask.long()
 
-        return sample_list
+        return masked_lm_labels, image_mask.long()
 
     # Backward compatibility for code from original VisualBERT
     @classmethod
@@ -555,38 +475,23 @@ class VisualBERT(BaseModel):
             .replace("bert.classifier", "model.classifier")
         )
 
-    def forward(self, sample_list: Dict[str, Tensor]) -> Dict[str, Tensor]:
-        if torch.jit.is_scripting():
-            assert (
-                "image_feature_0" in sample_list
-            ), "Key 'image_feature_0' is required in TorchScript model"
+    def forward(self, input_ids, image_feature_0, input_mask, segment_ids) -> Dict[str, Tensor]:
 
-        sample_list = self.update_sample_list_based_on_head(sample_list)
-        sample_list = self.add_custom_params(sample_list)
-        sample_list = self.flatten_for_bert(sample_list)
-        sample_list = self.add_post_flatten_params(sample_list)
+        image_dim = self.update_sample_list_based_on_head(image_feature_0)
+        masked_lm_labels, image_mask = self.add_custom_params(image_feature_0, image_dim)
+        input_ids, token_type_ids, input_mask, image_mask, visual_embeddings, masked_lm_labels = \
+            self.flatten_for_bert(input_ids, segment_ids, input_mask, image_mask, image_feature_0, masked_lm_labels)
+        visual_embeddings_type, attention_mask = self.add_post_flatten_params(image_mask, input_mask)
 
         output_dict = self.model(
-            sample_list["input_ids"],
-            sample_list["input_mask"],
-            sample_list["attention_mask"],
-            sample_list["token_type_ids"],
-            sample_list["visual_embeddings"],
-            sample_list["visual_embeddings_type"],
-            getattr_torchscriptable(sample_list, "image_text_alignment", None),
-            getattr_torchscriptable(sample_list, "masked_lm_labels", None),
+            input_ids,
+            input_mask,
+            attention_mask,
+            token_type_ids,
+            visual_embeddings,
+            visual_embeddings_type,
+            None,
+            masked_lm_labels
         )
-
-        if self.training_head_type == "pretraining":
-            if not torch.jit.is_scripting():
-                loss_key = "{}/{}".format(
-                    sample_list["dataset_name"], sample_list["dataset_type"]
-                )
-                output_dict["losses"] = {}
-                output_dict["losses"][loss_key + "/masked_lm_loss"] = output_dict.pop(
-                    "masked_lm_loss"
-                )
-            else:
-                raise RuntimeError("Pretraining head can't be used in script mode.")
 
         return output_dict

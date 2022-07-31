@@ -106,24 +106,26 @@ class Losses(nn.Module):
 
         """
         output = {}
-        if "targets" not in sample_list:
-            if not self._evaluation_predict:
-                warnings.warn(
-                    "Sample list has not field 'targets', are you "
-                    "sure that your ImDB has labels? you may have "
-                    "wanted to run with evaluation.predict=true"
-                )
-            return output
-
+        # if "targets" not in sample_list:
+        #     if not self._evaluation_predict:
+        #         warnings.warn(
+        #             "Sample list has not field 'targets', are you "
+        #             "sure that your ImDB has labels? you may have "
+        #             "wanted to run with evaluation.predict=true"
+        #         )
+        #     return output
+        
+        # print("Model Output:", len(model_output['scores']), model_output['scores'])
         for loss in self.losses:
+            # print(type(loss), loss)
             output.update(loss(sample_list, model_output))
 
-        if not torch.jit.is_scripting():
-            registry_loss_key = "{}.{}.{}".format(
-                "losses", sample_list["dataset_name"], sample_list["dataset_type"]
-            )
-            # Register the losses to registry
-            registry.register(registry_loss_key, output)
+        # if not torch.jit.is_scripting():
+        #     registry_loss_key = "{}.{}.{}".format(
+        #         "losses", sample_list["dataset_name"], sample_list["dataset_type"]
+        #     )
+        #     # Register the losses to registry
+        #     registry.register(registry_loss_key, output)
 
         return output
 
@@ -188,14 +190,6 @@ class MMFLoss(nn.Module):
 
     def forward(self, sample_list: Dict[str, Tensor], model_output: Dict[str, Tensor]):
         loss_dict = {}
-        if hasattr(self.loss_criterion, "datasets"):
-            datasets = self.loss_criterion.datasets
-            if (
-                isinstance(datasets, list)
-                and sample_list["dataset_name"] not in datasets
-            ):
-                return loss_dict
-
         loss_result = self.loss_criterion(sample_list, model_output)
 
         if not isinstance(loss_result, collections.abc.Mapping):
@@ -209,15 +203,16 @@ class MMFLoss(nn.Module):
             if child_loss_result.dim() == 0:
                 child_loss_result = child_loss_result.view(1)
 
-            if not torch.jit.is_scripting():
-                key = "{}/{}/{}".format(
-                    sample_list.dataset_type, sample_list.dataset_name, self.name
-                )
-            else:
-                key = f"{self.name}"
+            # if not torch.jit.is_scripting():
+            #     key = "{}/{}/{}".format(
+            #         sample_list.dataset_type, sample_list.dataset_name, self.name
+            #     )
+            # else:
+            #     key = f"{self.name}"
 
-            key = f"{key}/{child_loss_name}" if child_loss_name else key
-            loss_dict[key] = child_loss_result
+            # key = f"{key}/{child_loss_name}" if child_loss_name else key
+            # loss_dict[key] = child_loss_result
+            loss_dict["crossentropy_loss"] = child_loss_result
 
         return loss_dict
 
@@ -870,13 +865,6 @@ class BCEAndKLLoss(nn.Module):
 
         return loss
 
-
-def calc_ms_loss(pair, base, param, multiplier):
-    return (
-        1.0
-        / param
-        * torch.log(1 + torch.sum(torch.exp(multiplier * param * (pair - base))))
-    )
 
 
 @registry.register_loss("refiner_ms")

@@ -732,6 +732,7 @@ class BertEncoder(nn.Module):
                             use_co_attention_mask,
                         )
 
+                        # print(co_attention_probs)
                         if (
                             output_all_attention_masks
                             and "attn1" in co_attention_probs
@@ -1283,7 +1284,7 @@ class ViLBERTForClassification(nn.Module):
         image_label: Optional[Tensor] = None,
         image_target: Optional[Tensor] = None,
         next_sentence_label: Optional[Tensor] = None,
-        output_all_attention_masks: bool = False,
+        output_all_attention_masks: bool = True,
     ) -> Dict[str, Tensor]:
 
         (
@@ -1355,50 +1356,22 @@ class ViLBERT(BaseModel):
             for p in self.model.bert.parameters():
                 p.requires_grad = False
 
-    def get_image_and_text_features(self, sample_list):
-        bert_input_ids = sample_list.input_ids
-        bert_input_mask = sample_list.input_mask
-        bert_input_type_ids = sample_list.segment_ids
+    def get_image_and_text_features(self, input_ids, input_mask, segment_ids, image_info_0, image_feature_0):
+        bert_input_ids = input_ids
+        bert_input_mask = input_mask
+        bert_input_type_ids = segment_ids
 
-        if sample_list.dataset_name == "nlvr2":
-            bert_input_ids = torch.cat([bert_input_ids, bert_input_ids])
-            bert_input_mask = torch.cat([bert_input_mask, bert_input_mask])
-            bert_input_type_ids = torch.cat([bert_input_type_ids, bert_input_type_ids])
+        image_info = image_info_0
+        image_feature_variable = image_feature_0
+        image_label_variable = None
+        image_dim_variable = getattr(image_info, "max_features", None)
+        image_location_variable = getattr(image_info, "bbox", None)
 
-            # image input
-            img0 = getattr(sample_list, "img0", {})
-            image_info = getattr(img0, "image_info_0", {})
-            image_dim_variable_0 = getattr(image_info, "max_features", None)
-            image_feature_variable_0 = getattr(img0, "image_feature_0", None)
-            image_location_variable_0 = getattr(image_info, "bbox", None)
-
-            img1 = getattr(sample_list, "img1", {})
-            image_info = getattr(img1, "image_info_0", {})
-            image_dim_variable_1 = getattr(image_info, "max_features", None)
-            image_feature_variable_1 = getattr(img1, "image_feature_0", None)
-            image_location_variable_1 = getattr(image_info, "bbox", None)
-
-            image_feature_variable = torch.cat(
-                [image_feature_variable_0, image_feature_variable_1]
-            )
-            image_location_variable = torch.cat(
-                [image_location_variable_0, image_location_variable_1]
-            )
-            image_dim_variable = torch.cat([image_dim_variable_0, image_dim_variable_1])
-            image_label_variable = None
-            image_target_variable = None
-        else:
-            image_info = getattr(sample_list, "image_info_0", {})
-            image_dim_variable = getattr(image_info, "max_features", None)
-            image_feature_variable = getattr(sample_list, "image_feature_0", None)
-            image_label_variable = getattr(sample_list, "image_labels", None)
-            image_location_variable = getattr(image_info, "bbox", None)
-
-            cls_prob = getattr(image_info, "cls_prob", None)
-            image_target = np.array(cls_prob, dtype=np.float32)
-            image_target_variable = torch.tensor(
-                image_target, dtype=torch.float, device=bert_input_ids.device
-            )
+        cls_prob = getattr(image_info, "cls_prob", None)
+        image_target = np.array(cls_prob, dtype=np.float32)
+        image_target_variable = torch.tensor(
+            image_target, dtype=torch.float, device=bert_input_ids.device
+        )
 
         return {
             "input_ids": bert_input_ids,
@@ -1414,10 +1387,12 @@ class ViLBERT(BaseModel):
     def get_optimizer_parameters(self, config):
         return get_optimizer_parameters_for_bert(self.model, config)
 
-    def forward(self, sample_list):
-        params = self.get_image_and_text_features(sample_list)
+    def forward(self, input_ids, image_feature_0, input_mask, segment_ids, image_info_0, lm_label_ids):
+        params = self.get_image_and_text_features(input_ids, input_mask, segment_ids, image_info_0, image_feature_0)
+        # print("[MODEL] Image Info 0:", image_info_0)
+        # print("[MODEL] Lm Label Ids:", lm_label_ids)
         # pretraining labels
-        params["masked_lm_labels"] = getattr(sample_list, "lm_label_ids", None)
+        params["masked_lm_labels"] = lm_label_ids
         # is_random_next = getattr(sample_list, "is_correct", None)
         # TODO(aps): Fix on dataset side
         # params["is_random_next"] = None
@@ -1447,20 +1422,5 @@ class ViLBERT(BaseModel):
             params["image_label"],
             params["image_target"],
         )
-
-        if self.config.training_head_type == "pretraining":
-            loss_key = "{}/{}".format(
-                sample_list.dataset_name, sample_list.dataset_type
-            )
-            output_dict["losses"] = {}
-            output_dict["losses"][loss_key + "/masked_lm_loss"] = output_dict.pop(
-                "masked_lm_loss"
-            )
-            output_dict["losses"][loss_key + "/masked_img_loss"] = output_dict.pop(
-                "masked_img_loss"
-            )
-            # if params["is_random_next"] is not None:
-            #     output_dict["losses"][loss_key + "/next_sentence_loss"]
-            #       = output_dict.pop("next_sentence_loss")
 
         return output_dict

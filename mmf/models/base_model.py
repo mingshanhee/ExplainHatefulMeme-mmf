@@ -303,12 +303,8 @@ class BaseModel(pl.LightningModule):
             batch = SampleList(batch)
         return batch
 
-    def __call__(self, sample_list, *args, **kwargs):
-        if not self._is_pl_enabled:
-            # Move to proper device i.e. same as the model before passing
-            sample_list = to_device(sample_list, get_current_device())
-
-        model_output = super().__call__(sample_list, *args, **kwargs)
+    def __call__(self, input_0, input_1, targets, input_mask, segment_ids, return_output_dict, *args, **kwargs):
+        model_output = super().__call__(input_0, input_1, input_mask, segment_ids, *args, **kwargs)
 
         # Don't do anything fancy to output if it is pretrained
         if self.is_pretrained:
@@ -331,10 +327,17 @@ class BaseModel(pl.LightningModule):
                 model_output["losses"], collections.abc.Mapping
             ), "'losses' must be a dict."
         elif hasattr(self, "losses"):
-            model_output["losses"] = self.losses(sample_list, model_output)
+            model_output["losses"] = self.losses({"targets": targets}, model_output)
         else:
             model_output["losses"] = {}
 
+        scores = model_output["scores"]
+        if return_output_dict:
+            return scores, model_output
+        else:
+            return scores
+
+        # Captum requires the model scores instead of model losses
         return model_output
 
     def load_requirements(self, config, *args, **kwargs):

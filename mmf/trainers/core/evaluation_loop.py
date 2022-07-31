@@ -2,6 +2,7 @@
 
 import logging
 from abc import ABC
+from re import L
 from typing import Any, Dict, Tuple, Type
 
 import torch
@@ -10,10 +11,82 @@ from caffe2.python.timeout_guard import CompleteInTimeOrDie
 from mmf.common.meter import Meter
 from mmf.common.report import Report
 from mmf.common.sample import to_device
-from mmf.utils.distributed import gather_tensor, is_main, is_xla
+from mmf.utils.distributed import gather_tensor, is_master, is_xla
+
+import torch.nn.functional as F
+from captum.attr._utils.input_layer_wrapper import ModelInputWrapper
+from captum.attr import LayerIntegratedGradients, TokenReferenceBase
+from mmf.models.visual_bert import VisualBERT
+from mmf.models.vilbert import ViLBERT
+
+import json
+import os
+import numpy as np
+import pickle as pkl
 
 
 logger = logging.getLogger(__name__)
+
+def process_VisualBERT_attentions(attentions, text_length, vision_length):
+    """
+        For VisualBERT, there are three attention weights
+        - attentions[0]: text-to-text attention weights
+        - attentions[1]: vision-to-vision attention weights
+        - attentions[2]: text-to-vision and vision-to-text attention weights
+    """
+    text_attn = []
+    vision_attn = []
+    text2vision_attn, vision2text_attn = [], []
+    for attn in attentions[0]:
+        attn = attn.squeeze().clone().detach().cpu().numpy()
+
+        text_attn.append(attn[:text_length, :text_length]) # The first 128 tokens = Text
+        vision_attn.append(attn[text_length:, text_length:]) # The subsequent tokens = Image
+        text2vision_attn.append(attn[:text_length, text_length:])
+        vision2text_attn.append(attn[text_length:, :text_length])
+
+    return {
+        "t2t": text_attn,
+        "i2i": vision_attn,
+        "t2i": text2vision_attn,
+        "i2t": vision2text_attn
+    }
+
+def process_ViLBERT_attentions(attentions, text_length, vision_length):
+    """
+        For ViLBERT, there are three attention weights
+        - attentions[0]: text-to-text attention weights
+        - attentions[1]: vision-to-vision attention weights
+        - attentions[2]: text-to-vision and vision-to-text attention weights
+    """
+    text_attn = []
+    for attn in attentions[0]:
+        attn = attn.squeeze().clone().detach().cpu().numpy()
+        text_attn.append(attn)
+
+    vision_attn = []
+    for attn in attentions[1]:
+        attn = attn.squeeze().clone().detach().cpu().numpy()
+        vision_attn.append(attn)
+
+    text2vision_attn, vision2text_attn = [], []
+    for attn_tuple in attentions[2]:
+        for attn in attn_tuple:
+            attn = attn.squeeze().clone().detach().cpu().numpy()
+
+            if attn.shape[1] == text_length:
+                text2vision_attn.append(attn)
+            elif attn.shape[1] == vision_length:
+                vision2text_attn.append(attn)
+            else:
+                raise ValueError("Unobserved length...")
+
+    return {
+        "t2t": text_attn,
+        "i2i": vision_attn,
+        "t2i": text2vision_attn,
+        "i2t": vision2text_attn
+    }
 
 
 class TrainerEvaluationLoopMixin(ABC):
@@ -26,9 +99,13 @@ class TrainerEvaluationLoopMixin(ABC):
         loaded_batches = 0
         skipped_batches = 0
 
+        model_wrapper = ModelInputWrapper(self.model)
+        token_reference = TokenReferenceBase(reference_token_idx=102)
+        lig = LayerIntegratedGradients(model_wrapper, [model_wrapper.input_maps["image_feature_0"], model_wrapper.module.model.bert.embeddings.word_embeddings])
+
         with torch.no_grad():
             self.model.eval()
-            disable_tqdm = not use_tqdm or not is_main()
+            disable_tqdm = not use_tqdm or not is_master()
             while reporter.next_dataset(flush_report=False):
                 dataloader = reporter.get_dataloader()
                 combined_report = None
@@ -46,8 +123,112 @@ class TrainerEvaluationLoopMixin(ABC):
                             logger.info("Skip batch due to uneven batch sizes.")
                             skipped_batches += 1
                             continue
-                        model_output = self.model(prepared_batch)
-                        report = Report(prepared_batch, model_output)
+
+                        # Perform normal inference
+                        # print(type(self.model), isinstance(self.model, VilBERT))
+                        # exit()
+                        if isinstance(self.model, VisualBERT):
+                            additional_args = (
+                                prepared_batch['targets'],
+                                prepared_batch['input_mask'], 
+                                prepared_batch['segment_ids'], 
+                                True
+                            )
+                        elif isinstance(self.model, ViLBERT):
+                            additional_args = (
+                                prepared_batch['targets'],
+                                prepared_batch['input_mask'], 
+                                prepared_batch['segment_ids'], 
+                                True,
+                                prepared_batch["image_info_0"],
+                                prepared_batch["lm_label_ids"]
+                            )
+                        else:
+                            raise NotImplementedError(f"{type(self.model)} not implemented...")
+
+                        scores, model_outputs = self.model(prepared_batch['input_ids'], 
+                                                            prepared_batch['image_feature_0'],
+                                                            *additional_args)
+
+                        pred, answer_idx = F.softmax(scores, dim=1).data.cpu().max(dim=1)
+
+                        # Prepare references for Layer Integrated Gradients
+                        q_reference_indices = token_reference.generate_reference(prepared_batch['input_ids'].shape[1], device='cuda').unsqueeze(0)
+                        
+                        inputs = (prepared_batch['input_ids'], prepared_batch['image_feature_0'])
+                        baselines = (q_reference_indices, prepared_batch['image_feature_0'] * 0.0)
+
+
+                        if isinstance(self.model, VisualBERT):
+                            additional_args = (
+                                prepared_batch['targets'],
+                                prepared_batch['input_mask'], 
+                                prepared_batch['segment_ids'], 
+                                False
+                            )
+                        elif isinstance(self.model, ViLBERT):
+                            additional_args = (
+                                prepared_batch['targets'],
+                                prepared_batch['input_mask'], 
+                                prepared_batch['segment_ids'], 
+                                False,
+                                prepared_batch["image_info_0"],
+                                prepared_batch["lm_label_ids"]
+                            )
+                        else:
+                            raise NotImplementedError(f"{type(self.model)} not implemented...")
+
+                        attr, delta = lig.attribute(
+                            inputs=inputs,
+                            baselines=baselines,
+                            n_steps=50,
+                            target=1,
+                            additional_forward_args=additional_args, 
+                            return_convergence_delta=True
+                        )
+
+                        metadata = {
+                            "pred_probs": pred[0].item(),
+                            "pred_class": "hateful" if answer_idx == 1 else "not hateful",
+                            "true_class": "hateful" if prepared_batch['targets'].item() == 1 else "not hateful",
+                            "raw_input": prepared_batch['text'],
+                            "attr_class": "hateful",
+                            "convergence_score": delta.item()
+                        }
+                        
+                        attn_dir = self.config["env"]["captum_dir"]
+
+                        filepath = os.path.join(attn_dir, 'metadata', f"{prepared_batch['id'].item()}_text_metadata.json")
+                        with open(filepath, 'w') as f:
+                            json.dump(metadata, f)
+
+                        filepath = os.path.join(attn_dir, 'gradients', f"{prepared_batch['id'].item()}_text_gradients.npy")
+                        with open(filepath, 'wb') as f:
+                            np.save(f, attr[1].clone().detach().cpu().numpy())
+
+                        filepath = os.path.join(attn_dir, 'gradients', f"{prepared_batch['id'].item()}_img_gradients.npy")
+                        with open(filepath, 'wb') as f:
+                            np.save(f, attr[0].clone().detach().cpu().numpy())
+
+
+                        # Convert tensors to numpy 
+
+                        if isinstance(self.model, VisualBERT):
+                            process_func = process_VisualBERT_attentions
+                        elif isinstance(self.model, ViLBERT):
+                            process_func = process_ViLBERT_attentions
+                        else:
+                            raise NotImplementedError(f"{type(self.model)} not implemented...")
+
+                        attention_weights = process_func(model_outputs['attention_weights'], prepared_batch['input_ids'].shape[1], prepared_batch['image_feature_0'].shape[1])
+
+                        # temporary code to output attention_weights
+                        filepath = os.path.join(attn_dir, 'attentions', f"{prepared_batch['id'].item()}.npy")
+                        with open(filepath, 'wb') as handle:
+                            pkl.dump(attention_weights, handle, protocol=pkl.HIGHEST_PROTOCOL)
+
+                        model_outputs['scores'] = scores
+                        report = Report(prepared_batch, model_outputs)
                         report = report.detach()
 
                         meter.update_from_report(report)
@@ -84,7 +265,7 @@ class TrainerEvaluationLoopMixin(ABC):
                         if single_batch is True:
                             break
 
-                logger.info(f"Finished evaluation inference. Loaded {loaded_batches}")
+                logger.info(f"Finished training. Loaded {loaded_batches}")
                 logger.info(f" -- skipped {skipped_batches} batches.")
 
                 reporter.postprocess_dataset_report()
