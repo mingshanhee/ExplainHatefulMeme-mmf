@@ -209,10 +209,11 @@ class TrainerEvaluationLoopMixin(ABC):
                             "convergence_score": delta.item()
                         }
                         
-                        attn_dir = self.config["env"]["captum_dir"]
+                        captum_dir = self.config["env"]["captum_dir"]
 
-                        metadata_folder = os.path.join(attn_dir, 'metadata')
-                        gradients_folder = os.path.join(attn_dir, 'gradients')
+                        metadata_folder = os.path.join(captum_dir, 'metadata')
+                        gradients_folder = os.path.join(captum_dir, 'gradients')
+                        attn_dir = os.path.join(captum_dir, 'attentions')
 
                         if not os.path.exists(metadata_folder):
                             os.makedirs(metadata_folder)
@@ -220,15 +221,18 @@ class TrainerEvaluationLoopMixin(ABC):
                         if not os.path.exists(gradients_folder):
                             os.makedirs(gradients_folder)
 
-                        filepath = os.path.join(attn_dir, 'metadata', f"{prepared_batch['id'].item()}_text_metadata.json")
+                        if not os.path.exists(attn_dir):
+                            os.makedirs(attn_dir)
+
+                        filepath = os.path.join(metadata_folder, f"{prepared_batch['id'].item()}_text_metadata.json")
                         with open(filepath, 'w') as f:
                             json.dump(metadata, f)
 
-                        filepath = os.path.join(attn_dir, 'gradients', f"{prepared_batch['id'].item()}_text_gradients.npy")
+                        filepath = os.path.join(gradients_folder, f"{prepared_batch['id'].item()}_text_gradients.npy")
                         with open(filepath, 'wb') as f:
                             np.save(f, attr[1].clone().detach().cpu().numpy())
 
-                        filepath = os.path.join(attn_dir, 'gradients', f"{prepared_batch['id'].item()}_img_gradients.npy")
+                        filepath = os.path.join(gradients_folder, f"{prepared_batch['id'].item()}_img_gradients.npy")
                         with open(filepath, 'wb') as f:
                             np.save(f, attr[0].clone().detach().cpu().numpy())
 
@@ -244,8 +248,7 @@ class TrainerEvaluationLoopMixin(ABC):
 
                         attention_weights = process_func(model_outputs['attention_weights'], prepared_batch['input_ids'].shape[1], prepared_batch['image_feature_0'].shape[1])
 
-                        # temporary code to output attention_weights
-                        filepath = os.path.join(attn_dir, 'attentions', f"{prepared_batch['id'].item()}.npy")
+                        filepath = os.path.join(attn_dir, f"{prepared_batch['id'].item()}.npy")
                         with open(filepath, 'wb') as handle:
                             pkl.dump(attention_weights, handle, protocol=pkl.HIGHEST_PROTOCOL)
 
