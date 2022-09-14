@@ -40,10 +40,21 @@ def process_VisualBERT_attentions(attentions, text_length, vision_length):
     for attn in attentions[0]:
         attn = attn.squeeze().clone().detach().cpu().numpy()
 
-        text_attn.append(attn[:text_length, :text_length]) # The first 128 tokens = Text
-        vision_attn.append(attn[text_length:, text_length:]) # The subsequent tokens = Image
-        text2vision_attn.append(attn[:text_length, text_length:])
-        vision2text_attn.append(attn[text_length:, :text_length])
+        text2text = attn[:, :text_length, :text_length]
+        vision2vision = attn[:, text_length:, text_length:]
+
+        text2vision = attn[:, :text_length, text_length:]
+        vision2text = attn[:, text_length:, :text_length]
+
+        assert text2text.shape[1:] == (text_length, text_length)
+        assert vision2vision.shape[1:] == (vision_length, vision_length)
+        assert text2vision.shape[1:] == (text_length, vision_length)
+        assert vision2text.shape[1:] == (vision_length, text_length)
+
+        text_attn.append(text2text) # The first 128 tokens = Text
+        vision_attn.append(vision2vision) # The subsequent tokens = Image
+        text2vision_attn.append(text2vision)
+        vision2text_attn.append(vision2text)
 
     return {
         "t2t": text_attn,
@@ -100,7 +111,7 @@ class TrainerEvaluationLoopMixin(ABC):
         skipped_batches = 0
 
         model_wrapper = ModelInputWrapper(self.model)
-        token_reference = TokenReferenceBase(reference_token_idx=102)
+        token_reference = TokenReferenceBase(reference_token_idx=102) # 102 is the token id for [PAD]
         lig = LayerIntegratedGradients(model_wrapper, [model_wrapper.input_maps["image_feature_0"], model_wrapper.module.model.bert.embeddings.word_embeddings])
 
         with torch.no_grad():
@@ -153,6 +164,8 @@ class TrainerEvaluationLoopMixin(ABC):
                         pred, answer_idx = F.softmax(scores, dim=1).data.cpu().max(dim=1)
 
                         # Prepare references for Layer Integrated Gradients
+                        # Text Reference: [PAD] tokens for all 128 tokens
+                        # Image Reference: int tokens with value of 0.0 for all 100 tokens
                         q_reference_indices = token_reference.generate_reference(prepared_batch['input_ids'].shape[1], device='cuda').unsqueeze(0)
                         
                         inputs = (prepared_batch['input_ids'], prepared_batch['image_feature_0'])
@@ -197,6 +210,15 @@ class TrainerEvaluationLoopMixin(ABC):
                         }
                         
                         attn_dir = self.config["env"]["captum_dir"]
+
+                        metadata_folder = os.path.join(attn_dir, 'metadata')
+                        gradients_folder = os.path.join(attn_dir, 'gradients')
+
+                        if not os.path.exists(metadata_folder):
+                            os.makedirs(metadata_folder)
+                            
+                        if not os.path.exists(gradients_folder):
+                            os.makedirs(gradients_folder)
 
                         filepath = os.path.join(attn_dir, 'metadata', f"{prepared_batch['id'].item()}_text_metadata.json")
                         with open(filepath, 'w') as f:

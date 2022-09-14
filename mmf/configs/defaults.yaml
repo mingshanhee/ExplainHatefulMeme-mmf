@@ -321,6 +321,8 @@ env:
     # Use MMF_USER_DIR or env.user_dir to specify
     user_dir: ${oc.env:MMF_USER_DIR,}
 
+    captum_dir: None
+
 ###
 # Configuration for the distributed setup
 distributed:
