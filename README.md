@@ -1,51 +1,55 @@
+## Introduction
 
-<div align="center">
-<img src="https://mmf.sh/img/logo.svg" width="50%"/>
-</div>
+**Disclaimer**: This repository is forked from Facebook's [MMF](https://github.com/facebookresearch/mmf) and has been modified to obtain certain interpretabilty measures from state-of-the-art multimodal models (namely, VisualBERT and ViLBERT) for hateful memes detection. If you are working on hateful memes detection tasks, do refer to the following materials.
+- [The hateful memes challenge: detecting hate speech in multimodal memes](https://dl.acm.org/doi/abs/10.5555/3495724.3495944)
+- [Facebook's MMF repository on Hateful Memes Detection](https://github.com/facebookresearch/mmf/tree/main/projects/hateful_memes)
 
-#
+**Purpose**: This repository has been modified to incorporate Facebook's open-sourced [Captum](https://captum.ai) library for interpretability. 
 
-<div align="center">
-  <a href="https://mmf.sh/docs">
-  <img alt="Documentation Status" src="https://readthedocs.org/projects/mmf/badge/?version=latest"/>
-  </a>
-  <a href="https://circleci.com/gh/facebookresearch/mmf">
-  <img alt="CircleCI" src="https://circleci.com/gh/facebookresearch/mmf.svg?style=svg"/>
-  </a>
-</div>
+## Using the forked repository on Facebook's Pretrained Models for Hateful Memes Detection
 
----
+### Step 1: Prerequisites
 
-MMF is a modular framework for vision and language multimodal research from Facebook AI Research. MMF contains reference implementations of state-of-the-art vision and language models and has powered multiple research projects at Facebook AI Research. See full list of project inside or built on MMF [here](https://mmf.sh/docs/notes/projects).
+Follow the prerequisites instructions from the original repository: https://github.com/facebookresearch/mmf/tree/main/projects/hateful_memes. This will provide you the datasets from "The Hateful Memes Challenge", which is required for the pretrained model inference.
 
-MMF is powered by PyTorch, allows distributed training and is un-opinionated, scalable and fast. Use MMF to **_bootstrap_** for your next vision and language multimodal research project by following the [installation instructions](https://mmf.sh/docs/). Take a look at list of MMF features [here](https://mmf.sh/docs/getting_started/features).
+**Note: You do not need to install the MMF from the original repository, as we will be installing this repository instead**
 
-MMF also acts as **starter codebase** for challenges around vision and
-language datasets (The Hateful Memes, TextVQA, TextCaps and VQA challenges). MMF was formerly known as Pythia. The next video shows an overview of how datasets and models work inside MMF. Checkout MMF's [video overview](https://mmf.sh/docs/getting_started/video_overview).
+### Step 2. Install the Pytorch requirements
 
+In our experiments, we used the following Pytorch environments.
 
-## Installation
-
-Follow installation instructions in the [documentation](https://mmf.sh/docs/).
-
-## Documentation
-
-Learn more about MMF [here](https://mmf.sh/docs).
-
-## Citation
-
-If you use MMF in your work or use any models published in MMF, please cite:
-
-```bibtex
-@misc{singh2020mmf,
-  author =       {Singh, Amanpreet and Goswami, Vedanuj and Natarajan, Vivek and Jiang, Yu and Chen, Xinlei and Shah, Meet and
-                 Rohrbach, Marcus and Batra, Dhruv and Parikh, Devi},
-  title =        {MMF: A multimodal framework for vision and language research},
-  howpublished = {\url{https://github.com/facebookresearch/mmf}},
-  year =         {2020}
-}
+```
+- torch==1.9.1+cu111 
+- torchvision==0.10.1+cu111 
+- torchaudio==0.9.1
 ```
 
-## License
+While we expect this repository to work with newer pytorch versions, it is recommended that you install our pytorch environments to avoid possible compatibility problems.
 
-MMF is licensed under BSD license available in [LICENSE](LICENSE) file
+### Step 3. Install from source
+
+**Important Note:** You need to uninstall existing *mmf* package prior to installing this repostiory. The installation docuemntation is largely adopted from the original MMF's documentation.
+
+```bash
+  git clone https://github.com/mingshanhee/ExplainHatefulMeme-mmf.git
+  cd mmf
+  pip install --editable .
+```
+
+In case you met permission issues when running the command, try to install to user folder and disable build isolation.
+
+```
+pip install --editable . --user --no-build-isolation
+```
+
+### Step 3. Modify and run the prepared scripts
+
+To facilitate easier adoption by fellow researchers, we have prepared and released sample script on how to perform inference using Facebook's Pretrained Models on Hateful Memes
+
+```bash
+# VisualBERT
+bash sample_scripts/test_visualbert_pretrained.sh
+
+# ViLBERT
+bash sample_scripts/test_vilbert_pretrained.sh
+```
